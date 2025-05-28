@@ -1,0 +1,9 @@
+--master=/dev/autopilot,115200
+--load-module="GPSInput,DepthOutput"
+--source-system=200
+--cmd="set heartbeat 0"
+--cmd="param forceload /home/ubuntu/probotsub/params/serial0.param"
+--logfile=/tmp/telemetry.tlog
+--mav20
+--streamrate 10
+--default-modules=output,param
