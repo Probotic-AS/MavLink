@@ -900,7 +900,18 @@ def main():
 
     # Spin waiting for a device to show up
     try:
+        # lasse this was a while true, replaced with a for loop to limit retries and exit gracefully for issue handling
+        i = -1
+        print("Looking for bootloader")
         while True:
+            i += 1
+            # lasse exit statement 
+            if i > 10:
+                print("Failed to flash, no bootloader found on any port.")
+                os._exit(-1)
+                print(f"attempt {i+1}")
+            
+        
             portlist = ports_to_try(args)
             # patterns = args.port.split(",")
             # on unix-like platforms use glob to support wildcard ports. This allows
@@ -948,6 +959,7 @@ def main():
                     continue
 
                 found_bootloader = False
+                
                 while True:
                     up.open()
 
@@ -958,6 +970,7 @@ def main():
                         found_bootloader = True
                         print()
                         print(f"Found board id: {up.board_type},{up.board_rev} bootloader protocol revision {up.bl_rev} on {port}")
+                        should_exit = False
                         break
 
                     except (RuntimeError, serial.SerialException):
@@ -966,13 +979,13 @@ def main():
                             break
 
                         # wait for the reboot, without we might run into Serial I/O Error 5
-                        time.sleep(0.25)
+                        time.sleep(1)
 
                         # always close the port
                         up.close()
 
                         # wait for the close, without we might run into Serial I/O Error 6
-                        time.sleep(0.3)
+                        time.sleep(1)
 
                 if not found_bootloader:
                     # Go to the next port
