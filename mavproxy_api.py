@@ -20,6 +20,7 @@ import struct
 import glob
 import json
 
+
 import mavproxy
 
 from importlib import reload
@@ -37,6 +38,136 @@ from MAVProxy.modules.lib import dumpstacks
 from MAVProxy.modules.lib import mp_substitute
 from MAVProxy.modules.lib import multiproc
 from MAVProxy.modules.mavproxy_link import preferred_ports
+
+# Lasse
+from flask import request, jsonify
+from flask import Flask
+import io
+from contextlib import redirect_stdout, redirect_stderr
+import tempfile
+
+command_lock = threading.Lock()
+
+app = Flask(__name__)
+
+
+def run_flask_api():
+    # app.run(host='127.0.0.1', port=5000, debug=False, use_reloader=False)
+    app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
+
+
+def capture_fd_output(func, *args, **kwargs):
+    # Save the real stdout/stderr fds
+    real_stdout_fd = sys.stdout.fileno()
+    real_stderr_fd = sys.stderr.fileno()
+
+    with tempfile.TemporaryFile(mode='w+b') as temp:
+        # Duplicate the file descriptors
+        saved_stdout_fd = os.dup(real_stdout_fd)
+        saved_stderr_fd = os.dup(real_stderr_fd)
+
+        output = ""
+
+        try:
+            # Redirect stdout/stderr to the temp file
+            os.dup2(temp.fileno(), real_stdout_fd)
+            os.dup2(temp.fileno(), real_stderr_fd)
+
+            # Run the function
+            func(*args, **kwargs)
+            
+            # Flush the buffers
+            sys.stdout.flush()
+            sys.stderr.flush()
+            
+            # Seek to start of temp file and read all output
+            temp.seek(0)
+            output = temp.read().decode('utf-8')
+            
+            return output
+
+        finally:
+            # Restore original file descriptors
+            os.dup2(saved_stdout_fd, real_stdout_fd)
+            os.dup2(saved_stderr_fd, real_stderr_fd)
+            os.close(saved_stdout_fd)
+            os.close(saved_stderr_fd)
+            sys.stdout.write(output)
+            sys.stdout.flush()
+
+
+@app.route('/api/command', methods=['POST'])
+def execute_command():
+    with command_lock:
+        data = request.get_json()
+        if not data or 'command' not in data:
+            return jsonify({"error": "Missing 'command' field"}), 400
+
+        command = data.get("command")
+
+        try:
+            timeout = float(data.get("timeout", "1"))
+        except (ValueError, TypeError) as e:
+            # Use default timeout of 1 second if conversion fails
+            timeout = 0.1
+
+        try:
+            threaded = bool(data.get("threaded", False))
+        except (ValueError, TypeError) as e:
+            # Use default timeout of 1 second if conversion fails
+            threaded = False
+
+        
+
+        if not threaded:
+            data = request.get_json()
+            if not data or 'command' not in data:
+                return jsonify({"error": "Missing 'command' field"}), 400
+
+            command_map_local = command_map.copy()
+            command_map_local["help"] = ("", "")
+
+            command = data.get("command")
+
+            f = io.StringIO()
+            output_buffer = process_stdin(command, output_buffer=f)
+            output = output_buffer.getvalue()
+
+            return jsonify({"output": output}), 200
+        else:
+            # Create a buffer to capture output
+            output_buffer = io.StringIO()
+
+            # Save the original console
+            original_console = mpstate.console
+
+            # Create a fake console that writes to our buffer
+            class APICaptureConsole:
+                def writeln(self, text, *args, **kwargs):
+                    output_buffer.write(str(text) + "\n")
+                    original_console.writeln(text, *args, **kwargs)
+
+                def write(self, text, *args, **kwargs):
+                    output_buffer.write(str(text))
+                    original_console.write(text, *args, **kwargs)
+
+                def error(self, text, *args, **kwargs):
+                    output_buffer.write("ERROR: " + str(text) + "\n")
+                    original_console.error(text, *args, **kwargs)
+
+            mpstate.console = APICaptureConsole()
+
+            try:
+                process_stdin(command)
+                time.sleep(timeout)
+                output = output_buffer.getvalue()
+            finally:
+                # Restore the original console
+                mpstate.console = original_console
+
+            return jsonify({"output": output}), 200
+
+
 
 # screensaver dbus syntax swiped from
 # https://stackoverflow.com/questions/10885337/inhibit-screensaver-with-python
@@ -748,78 +879,153 @@ def shlex_quotes(value):
     return list(lex)
 
 
-def process_stdin(line):
+def process_stdin(line, output_buffer=None):
     '''handle commands from user'''
-    if line is None:
-        sys.exit(0)
 
-    # allow for modules to override input handling
-    if mpstate.functions.input_handler is not None:
-        mpstate.functions.input_handler(line)
-        return
+    if io:
+        with redirect_stdout(output_buffer), redirect_stderr(output_buffer):
+            if line is None:
+                sys.exit(0)
 
-    line = line.strip()
+            # allow for modules to override input handling
+            if mpstate.functions.input_handler is not None:
+                mpstate.functions.input_handler(line)
+                return output_buffer
 
-    if mpstate.status.setup_mode:
-        # in setup mode we send strings straight to the master
-        if line == '.':
-            mpstate.status.setup_mode = False
-            mpstate.status.flightmode = "MAV"
-            mpstate.rl.set_prompt("MAV> ")
-            return
-        if line != '+++':
-            line += '\r'
-        for c in line:
-            time.sleep(0.01)
-            if sys.version_info.major >= 3:
-                mpstate.master().write(bytes(c, "ascii"))
-            else:
-                mpstate.master().write(c)
-        return
+            line = line.strip()
 
-    if not line:
-        return
+            if mpstate.status.setup_mode:
+                # in setup mode we send strings straight to the master
+                if line == '.':
+                    mpstate.status.setup_mode = False
+                    mpstate.status.flightmode = "MAV"
+                    mpstate.rl.set_prompt("MAV> ")
+                    return output_buffer
+                if line != '+++':
+                    line += '\r'
+                for c in line:
+                    time.sleep(0.01)
+                    if sys.version_info.major >= 3:
+                        mpstate.master().write(bytes(c, "ascii"))
+                    else:
+                        mpstate.master().write(c)
+                return output_buffer
 
-    try:
-        args = shlex_quotes(line)
-    except Exception as e:
-        print("Caught shlex exception: %s" % e.message);
-        return
+            if not line:
+                return output_buffer
 
-    cmd = args[0]
-    while cmd in mpstate.aliases:
-        line = mpstate.aliases[cmd]
-        args = shlex.split(line) + args[1:]
-        cmd = args[0]
+            try:
+                args = shlex_quotes(line)
+            except Exception as e:
+                print("Caught shlex exception: %s" % e.message);
+                return output_buffer
 
-    if cmd == 'help':
-        k = command_map.keys()
-        k = sorted(k)
-        for cmd in k:
+            cmd = args[0]
+            while cmd in mpstate.aliases:
+                line = mpstate.aliases[cmd]
+                args = shlex.split(line) + args[1:]
+                cmd = args[0]
+
+            if cmd == 'help':
+                k = command_map.keys()
+                k = sorted(k)
+                for cmd in k:
+                    (fn, help) = command_map[cmd]
+                    print("%-15s : %s" % (cmd, help))
+                return output_buffer
+            if cmd == 'exit' and mpstate.settings.requireexit:
+                mpstate.status.exit = True
+                return output_buffer
+
+            if not cmd in command_map:
+                for (m, pm) in mpstate.modules:
+                    if hasattr(m, 'unknown_command'):
+                        try:
+                            if m.unknown_command(args):
+                                return output_buffer
+                        except Exception as e:
+                            print("ERROR in command: %s" % str(e))
+                print("Unknown command '%s'" % line)
+                return output_buffer
             (fn, help) = command_map[cmd]
-            print("%-15s : %s" % (cmd, help))
-        return
-    if cmd == 'exit' and mpstate.settings.requireexit:
-        mpstate.status.exit = True
-        return
+            try:
+                fn(args[1:])
+            except Exception as e:
+                print("ERROR in command %s: %s" % (args[1:], str(e)))
+                if mpstate.settings.moddebug > 1:
+                    traceback.print_exc()
+        return output_buffer
+    else:
+        if line is None:
+            sys.exit(0)
 
-    if not cmd in command_map:
-        for (m, pm) in mpstate.modules:
-            if hasattr(m, 'unknown_command'):
-                try:
-                    if m.unknown_command(args):
-                        return
-                except Exception as e:
-                    print("ERROR in command: %s" % str(e))
-        print("Unknown command '%s'" % line)
-        return
-    (fn, help) = command_map[cmd]
-    try:
-        fn(args[1:])
-    except Exception as e:
-        print("ERROR in command %s: %s" % (args[1:], str(e)))
-        if mpstate.settings.moddebug > 1:
-            traceback.print_exc()
+        # allow for modules to override input handling
+        if mpstate.functions.input_handler is not None:
+            mpstate.functions.input_handler(line)
+            return
+
+        line = line.strip()
+
+        if mpstate.status.setup_mode:
+            # in setup mode we send strings straight to the master
+            if line == '.':
+                mpstate.status.setup_mode = False
+                mpstate.status.flightmode = "MAV"
+                mpstate.rl.set_prompt("MAV> ")
+                return
+            if line != '+++':
+                line += '\r'
+            for c in line:
+                time.sleep(0.01)
+                if sys.version_info.major >= 3:
+                    mpstate.master().write(bytes(c, "ascii"))
+                else:
+                    mpstate.master().write(c)
+            return
+
+        if not line:
+            return
+
+        try:
+            args = shlex_quotes(line)
+        except Exception as e:
+            print("Caught shlex exception: %s" % e.message);
+            return
+
+        cmd = args[0]
+        while cmd in mpstate.aliases:
+            line = mpstate.aliases[cmd]
+            args = shlex.split(line) + args[1:]
+            cmd = args[0]
+
+        if cmd == 'help':
+            k = command_map.keys()
+            k = sorted(k)
+            for cmd in k:
+                (fn, help) = command_map[cmd]
+                print("%-15s : %s" % (cmd, help))
+            return
+        if cmd == 'exit' and mpstate.settings.requireexit:
+            mpstate.status.exit = True
+            return
+
+        if not cmd in command_map:
+            for (m, pm) in mpstate.modules:
+                if hasattr(m, 'unknown_command'):
+                    try:
+                        if m.unknown_command(args):
+                            return
+                    except Exception as e:
+                        print("ERROR in command: %s" % str(e))
+            print("Unknown command '%s'" % line)
+            return
+        (fn, help) = command_map[cmd]
+        try:
+            fn(args[1:])
+        except Exception as e:
+            print("ERROR in command %s: %s" % (args[1:], str(e)))
+            if mpstate.settings.moddebug > 1:
+                traceback.print_exc()
 
 
 def process_master(m):
@@ -1274,6 +1480,10 @@ def set_mav_version(mav10, mav20, autoProtocol, mavversionArg):
 
 
 if __name__ == '__main__':
+    flask_thread = threading.Thread(target=run_flask_api)
+    flask_thread.daemon = True  # Optional: stops Flask thread when main program exits
+    flask_thread.start()
+
     # from optparse import OptionParser
     import argparse
 

@@ -1,0 +1,1 @@
+xargs -a /home/ubuntu/probotsub/MavLink/mavproxy.param /home/ubuntu/probotsub/MavLink/mavproxy.py --load-module cmdlong --out 127.0.0.1:14499 --out 127.0.0.1:14498
