@@ -51,11 +51,7 @@ Thumbs.db
 *.mov
 *.wmv
 
-communication_settings.json
-*communication_settings.json*
 ./static/assets/generated_content/*
-./communication_settings.json*
-*./communication_settings.json
 ./tmp/*
 
 kernel_version.json

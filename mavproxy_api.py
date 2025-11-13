@@ -53,7 +53,7 @@ app = Flask(__name__)
 
 def run_flask_api():
     # app.run(host='127.0.0.1', port=5000, debug=False, use_reloader=False)
-    app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
+    app.run(host='127.0.0.1', port=8002, debug=False, use_reloader=False)
 
 
 def capture_fd_output(func, *args, **kwargs):
@@ -885,6 +885,7 @@ def process_stdin(line, output_buffer=None):
     if io:
         with redirect_stdout(output_buffer), redirect_stderr(output_buffer):
             if line is None:
+                print("[process_stdin] exit called")
                 sys.exit(0)
 
             # allow for modules to override input handling
@@ -934,6 +935,7 @@ def process_stdin(line, output_buffer=None):
                     print("%-15s : %s" % (cmd, help))
                 return output_buffer
             if cmd == 'exit' and mpstate.settings.requireexit:
+                print("[mpstate.status.exit] cmd exit called")
                 mpstate.status.exit = True
                 return output_buffer
 
@@ -957,6 +959,7 @@ def process_stdin(line, output_buffer=None):
         return output_buffer
     else:
         if line is None:
+            print("[process_stdin] exit called")
             sys.exit(0)
 
         # allow for modules to override input handling
@@ -1006,6 +1009,7 @@ def process_stdin(line, output_buffer=None):
                 print("%-15s : %s" % (cmd, help))
             return
         if cmd == 'exit' and mpstate.settings.requireexit:
+            print("[mpstate.status.exit] cmd exit called")
             mpstate.status.exit = True
             return
 
@@ -1173,7 +1177,7 @@ def log_paths():
         if mpstate.continue_mode and highest is not None:
             fdir = highest
         elif os.path.exists(fdir):
-            print("Flight logs full")
+            print("[log_paths] Flight logs full, exiting")
             sys.exit(1)
         logname = 'flight.tlog'
         logdir = fdir
@@ -1210,6 +1214,7 @@ def open_telemetry_logs(logpath_telem, logpath_telem_raw):
             stat = os.statvfs(logpath_telem)
             if stat.f_bfree * stat.f_bsize < 209715200:
                 print("ERROR: Not enough free disk space for logfile")
+                print("[mpstate.status.exit] disk space error")
                 mpstate.status.exit = True
                 return
 
@@ -1221,6 +1226,7 @@ def open_telemetry_logs(logpath_telem, logpath_telem_raw):
         t.start()
     except Exception as e:
         print("ERROR: opening log file for writing: %s" % e)
+        print("[mpstate.status.exit] Log File Error")
         mpstate.status.exit = True
         return
 
@@ -1423,6 +1429,7 @@ def input_loop():
             line = mpstate.rl.input()
             mpstate.input_queue.put(line)
         except (EOFError, IOError):
+            print("[mpstate.status.exit] Input Loop error EOF/IO")
             mpstate.status.exit = True
 
 
@@ -1443,6 +1450,7 @@ def run_script(scriptfile):
         except mp_substitute.MAVSubstituteError as ex:
             print("Bad variable: %s" % str(ex))
             if mpstate.settings.script_fatal:
+                print("[run_script] exit called")
                 sys.exit(1)
             continue
         if line.startswith('@'):
@@ -1461,12 +1469,15 @@ def set_mav_version(mav10, mav20, autoProtocol, mavversionArg):
     # sanity check the options
     if (mav10 == True or mav20 == True) and autoProtocol == True:
         print("Error: Can't have [--mav10, --mav20] and --auto-protocol both True")
+        print("[set_mav_version] exit called")
         sys.exit(1)
     if mav10 == True and mav20 == True:
         print("Error: Can't have --mav10 and --mav20 both True")
+        print("[set_mav_version] exit called")
         sys.exit(1)
     if mavversionArg is not None and (mav10 == True or mav20 == True or autoProtocol == True):
         print("Error: Can't use --mavversion with legacy (--mav10, --mav20 or --auto-protocol) options")
+        print("[set_mav_version] exit called")
         sys.exit(1)
 
     # and set the specific mavlink version (False = autodetect)
@@ -1550,6 +1561,7 @@ if __name__ == '__main__':
     parser.add_argument("--default-modules",
                         default="log,signing,wp,rally,fence,ftp,param,relay,tuneopt,arm,mode,calibration,rc,auxopt,misc,cmdlong,battery,terrain,output,adsb,layout",
                         help='default module list')
+    parser.add_argument("--non_interactive", action='store_true', help="run non-interactive if no terminal input")
 
     for i in range(len(sys.argv)):
         sys.argv[i] = sys.argv[i].replace("\r", "")
@@ -1564,6 +1576,7 @@ if __name__ == '__main__':
 
     if not len(sys.argv) > 1:
         print("ERROR: mavproxy takes no position arguments; got (%s)" % str(opts))
+        print(f"[{__name__}] exit called positional arguments error")
         sys.exit(1)
 
     # warn people about ModemManager which interferes badly with APM and Pixhawk
@@ -1591,6 +1604,7 @@ if __name__ == '__main__':
 
         print("MAVProxy is a modular ground station using the mavlink protocol")
         print("MAVProxy Version: " + version)
+        print(f"[{__name__}] exit called version error")
         sys.exit(0)
 
     # global mavproxy state
@@ -1633,8 +1647,10 @@ if __name__ == '__main__':
         # print('Signal handler called with signal', signum)
         if mpstate.status.exit:
             print('Clean shutdown impossible, forcing an exit')
-            sys.exit(0)
+            print("[quit_handler] exit called")
+            exit(0)
         else:
+            print("[mpstate.status.exit] Quit Handler called")
             mpstate.status.exit = True
 
 
@@ -1646,6 +1662,7 @@ if __name__ == '__main__':
     except Exception:
         pass
     if opts.daemon or opts.non_interactive:  # SIGINT breaks readline parsing - if we are interactive, just let things die
+        print("fatal singal appended ddue to deamon or non_interactive")
         fatalsignals.append(signal.SIGINT)
 
     for sig in fatalsignals:
@@ -1661,8 +1678,10 @@ if __name__ == '__main__':
         if mdev.find('?') != -1 or mdev.find('*') != -1:
             for m in glob.glob(mdev):
                 if not mpstate.module('link').link_add(m, force_connected=opts.force_connected):
+                    print(f"[{__name__}] exit called master link error")
                     sys.exit(1)
         elif not mpstate.module('link').link_add(mdev, force_connected=opts.force_connected):
+            print(f"[{__name__}] exit called master link error 2")
             sys.exit(1)
 
     if not opts.master and len(serial_list) == 1:
@@ -1673,6 +1692,7 @@ if __name__ == '__main__':
             "Warning: multiple possible serial ports. Use console GUI or 'link add' to add port, or restart using --master to select a single port")
         # if no display, assume running CLI mode and exit
         if platform.system() != 'Windows' and "DISPLAY" not in os.environ:
+            print(f"[{__name__}] exit called no display error")
             sys.exit(1)
     elif not opts.master:
         wifi_device = '0.0.0.0:14550'
@@ -1792,7 +1812,9 @@ if __name__ == '__main__':
                         m.init(mpstate)
 
             else:
+                print("[mpstate.status.exit] Keyboard Interrupt?")
                 mpstate.status.exit = True
+                print(f"[{__name__}] exit called mpstate exit called")
                 sys.exit(1)
 
     if opts.profile:
@@ -1804,5 +1826,5 @@ if __name__ == '__main__':
         if hasattr(m, 'unload'):
             print("Unloading module %s" % m.name)
             m.unload()
-
+    print(f"[{__name__}] exit called cleanup complete")
     sys.exit(1)

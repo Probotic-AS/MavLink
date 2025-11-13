@@ -3,7 +3,8 @@
 --source-system=200
 --cmd="set heartbeat 0"
 --cmd="param forceload /home/ubuntu/probotsub/params/serial0.param"
---logfile=/tmp/telemetry.tlog
+--logfile=/home/ubuntu/logs/telemetry.tlog
 --mav20
 --streamrate 10
 --default-modules=output,param
+--non_interactive
