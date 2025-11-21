@@ -123,14 +123,9 @@ def execute_command():
         
 
         if not threaded:
-            data = request.get_json()
-            if not data or 'command' not in data:
-                return jsonify({"error": "Missing 'command' field"}), 400
 
             command_map_local = command_map.copy()
             command_map_local["help"] = ("", "")
-
-            command = data.get("command")
 
             f = io.StringIO()
             output_buffer = process_stdin(command, output_buffer=f)
