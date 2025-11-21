@@ -100,6 +100,9 @@ def capture_fd_output(func, *args, **kwargs):
 def execute_command():
     with command_lock:
         data = request.get_json()
+
+        print(f"/api/command called by {request.remote_addr} with data {data}")
+
         if not data or 'command' not in data:
             return jsonify({"error": "Missing 'command' field"}), 400
 
