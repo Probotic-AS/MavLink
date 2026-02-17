@@ -1788,6 +1788,14 @@ if __name__ == '__main__':
     mpstate.status.thread.daemon = True
     mpstate.status.thread.start()
 
+    # Allow parent (e.g. ProbotSub handler) to request clean shutdown via SIGTERM
+    def _on_sigterm(signum, frame):
+        print("[mavproxy_api] SIGTERM received, requesting exit")
+        mpstate.status.exit = True
+
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, _on_sigterm)
+
     # use main program for input. This ensures the terminal cleans
     # up on exit
     while (mpstate.status.exit != True):
