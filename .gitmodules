@@ -1,0 +1,2 @@
+[submodule "PX4-Autopilot"]
+	url = https://github.com/Probotic-AS/PX4-Autopilot.git
