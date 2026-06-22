@@ -188,36 +188,6 @@ class MPStatus(object):
 
 def say_text(text, priority='important'):
     '''text output - default function for say()'''
-
-    armed_status = text == "ARMED"
-
-    # Check if meta.json exists and create it if it doesn't
-    if not os.path.exists('meta.json'):
-        with open('meta.json', 'w') as f:
-            json.dump({}, f)
-
-    # Read the existing content of meta.json
-    with open('meta.json', 'r') as f:
-        content = f.read()
-
-    # If the file is empty, create a new dictionary object
-    if not content:
-        data = {}
-    else:
-        data = json.loads(content)
-
-    # Coerce the armed_status variable to a boolean value
-    if str(armed_status).lower() in ['true', '1']:
-        data['armed'] = True
-    else:
-        data['armed'] = False
-
-    # Update meta.json with the new value
-    with open('meta.json', 'w') as f:
-        json.dump(data, f)
-
-
-
     mpstate.console.writeln(text)
 
 

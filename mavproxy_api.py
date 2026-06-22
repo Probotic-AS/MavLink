@@ -41,133 +41,95 @@ from MAVProxy.modules.lib import mp_substitute
 from MAVProxy.modules.lib import multiproc
 from MAVProxy.modules.mavproxy_link import preferred_ports
 
-# Lasse
-from flask import request, jsonify
-from flask import Flask
+# Lasse — Unix hook IPC (replaces Flask on :8002)
 import io
 from contextlib import redirect_stdout, redirect_stderr
-import tempfile
 
 command_lock = threading.Lock()
-
-app = Flask(__name__)
-
-
-def run_flask_api():
-    # app.run(host='127.0.0.1', port=5000, debug=False, use_reloader=False)
-    app.run(host='127.0.0.1', port=8002, debug=False, use_reloader=False)
+_mavlink_hook_server = None
 
 
-def capture_fd_output(func, *args, **kwargs):
-    # Save the real stdout/stderr fds
-    real_stdout_fd = sys.stdout.fileno()
-    real_stderr_fd = sys.stderr.fileno()
+def run_api_command(data):
+    """Execute a mavproxy command from hook/API payload. Returns {"output": str}."""
+    if not data or "command" not in data:
+        raise ValueError("Missing 'command' field")
 
-    with tempfile.TemporaryFile(mode='w+b') as temp:
-        # Duplicate the file descriptors
-        saved_stdout_fd = os.dup(real_stdout_fd)
-        saved_stderr_fd = os.dup(real_stderr_fd)
+    command = data.get("command")
 
-        output = ""
+    try:
+        timeout = float(data.get("timeout", "1"))
+    except (ValueError, TypeError):
+        timeout = 0.1
 
-        try:
-            # Redirect stdout/stderr to the temp file
-            os.dup2(temp.fileno(), real_stdout_fd)
-            os.dup2(temp.fileno(), real_stderr_fd)
+    try:
+        threaded = bool(data.get("threaded", False))
+    except (ValueError, TypeError):
+        threaded = False
 
-            # Run the function
-            func(*args, **kwargs)
-            
-            # Flush the buffers
-            sys.stdout.flush()
-            sys.stderr.flush()
-            
-            # Seek to start of temp file and read all output
-            temp.seek(0)
-            output = temp.read().decode('utf-8')
-            
-            return output
+    print(f"/api/command hook with data {data}")
 
-        finally:
-            # Restore original file descriptors
-            os.dup2(saved_stdout_fd, real_stdout_fd)
-            os.dup2(saved_stderr_fd, real_stderr_fd)
-            os.close(saved_stdout_fd)
-            os.close(saved_stderr_fd)
-            sys.stdout.write(output)
-            sys.stdout.flush()
+    if not threaded:
+        output_buffer = io.StringIO()
+        process_stdin(command, output_buffer=output_buffer)
+        output = output_buffer.getvalue()
+        return {"output": output}
+
+    output_buffer = io.StringIO()
+    original_console = mpstate.console
+
+    class APICaptureConsole:
+        def writeln(self, text, *args, **kwargs):
+            output_buffer.write(str(text) + "\n")
+            original_console.writeln(text, *args, **kwargs)
+
+        def write(self, text, *args, **kwargs):
+            output_buffer.write(str(text))
+            original_console.write(text, *args, **kwargs)
+
+        def error(self, text, *args, **kwargs):
+            output_buffer.write("ERROR: " + str(text) + "\n")
+            original_console.error(text, *args, **kwargs)
+
+    mpstate.console = APICaptureConsole()
+    try:
+        process_stdin(command)
+        time.sleep(timeout)
+        output = output_buffer.getvalue()
+    finally:
+        mpstate.console = original_console
+
+    return {"output": output}
 
 
-@app.route('/api/command', methods=['POST'])
-def execute_command():
+def _mavlink_hook_ping(_req):
+    return {}
+
+
+def _mavlink_hook_command(req):
     with command_lock:
-        data = request.get_json()
-
-        print(f"/api/command called by {request.remote_addr} with data {data}")
-
-        if not data or 'command' not in data:
-            return jsonify({"error": "Missing 'command' field"}), 400
-
-        command = data.get("command")
-
-        try:
-            timeout = float(data.get("timeout", "1"))
-        except (ValueError, TypeError) as e:
-            # Use default timeout of 1 second if conversion fails
-            timeout = 0.1
-
-        try:
-            threaded = bool(data.get("threaded", False))
-        except (ValueError, TypeError) as e:
-            # Use default timeout of 1 second if conversion fails
-            threaded = False
-
-        
-
-        if not threaded:
-
-            command_map_local = command_map.copy()
-            command_map_local["help"] = ("", "")
-
-            f = io.StringIO()
-            output_buffer = process_stdin(command, output_buffer=f)
-            output = output_buffer.getvalue()
-
-            return jsonify({"output": output}), 200
-        else:
-            # Create a buffer to capture output
-            output_buffer = io.StringIO()
-
-            # Save the original console
-            original_console = mpstate.console
-
-            # Create a fake console that writes to our buffer
-            class APICaptureConsole:
-                def writeln(self, text, *args, **kwargs):
-                    output_buffer.write(str(text) + "\n")
-                    original_console.writeln(text, *args, **kwargs)
-
-                def write(self, text, *args, **kwargs):
-                    output_buffer.write(str(text))
-                    original_console.write(text, *args, **kwargs)
-
-                def error(self, text, *args, **kwargs):
-                    output_buffer.write("ERROR: " + str(text) + "\n")
-                    original_console.error(text, *args, **kwargs)
-
-            mpstate.console = APICaptureConsole()
-
-            try:
-                process_stdin(command)
-                time.sleep(timeout)
-                output = output_buffer.getvalue()
-            finally:
-                # Restore the original console
-                mpstate.console = original_console
-
-            return jsonify({"output": output}), 200
+        return run_api_command(req)
 
 
+def start_mavlink_hook_server(sock_path):
+    global _mavlink_hook_server
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+    from subprocesses.lib.ipc import HookServerThread
+    from bootstrap.log import log
+
+    try:
+        _mavlink_hook_server = HookServerThread(
+            sock_path,
+            {"ping": _mavlink_hook_ping, "command": _mavlink_hook_command},
+            name="mavlink-hook",
+        )
+        _mavlink_hook_server.start()
+    except Exception as exc:
+        print(f"FATAL: MavLink hook server failed on {sock_path}: {exc}", flush=True)
+        traceback.print_exc()
+        log.error("MavLink hook server failed on %s: %s", sock_path, exc)
+        raise
 
 # screensaver dbus syntax swiped from
 # https://stackoverflow.com/questions/10885337/inhibit-screensaver-with-python
@@ -319,36 +281,6 @@ class MPStatus(object):
 
 def say_text(text, priority='important'):
     '''text output - default function for say()'''
-
-    armed_status = text == "ARMED"
-
-    # Check if meta.json exists and create it if it doesn't
-    if not os.path.exists('meta.json'):
-        with open('meta.json', 'w') as f:
-            json.dump({}, f)
-
-    # Read the existing content of meta.json
-    with open('meta.json', 'r') as f:
-        content = f.read()
-
-    # If the file is empty, create a new dictionary object
-    if not content:
-        data = {}
-    else:
-        data = json.loads(content)
-
-    # Coerce the armed_status variable to a boolean value
-    if str(armed_status).lower() in ['true', '1']:
-        data['armed'] = True
-    else:
-        data['armed'] = False
-
-    # Update meta.json with the new value
-    with open('meta.json', 'w') as f:
-        json.dump(data, f)
-
-
-
     mpstate.console.writeln(text)
 
 
@@ -1491,9 +1423,9 @@ def set_mav_version(mav10, mav20, autoProtocol, mavversionArg):
 
 
 if __name__ == '__main__':
-    flask_thread = threading.Thread(target=run_flask_api)
-    flask_thread.daemon = True  # Optional: stops Flask thread when main program exits
-    flask_thread.start()
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
 
     # from optparse import OptionParser
     import argparse
@@ -1612,6 +1544,12 @@ if __name__ == '__main__':
     mpstate.status.exit = False
     mpstate.command_map = command_map
     mpstate.continue_mode = opts.continue_mode
+
+    from bootstrap.settings import MAVLINK_HOOK_SOCKET
+
+    hook_sock = os.environ.get("PROBOT_MAVLINK_HOOK_SOCKET", MAVLINK_HOOK_SOCKET)
+    start_mavlink_hook_server(hook_sock)
+
     # queues for logging
     mpstate.logqueue = Queue.Queue()
     mpstate.logqueue_raw = Queue.Queue()
