@@ -2,7 +2,7 @@ PORT=$(ls -t /dev/ttyACM* 2>/dev/null | head -n1)
 
 if [ -n "$PORT" ]; then
     while true; do
-        bash ../usb_reset.sh;
+        bash ../scripts/usb_reset.sh;
         echo "Uploading to $PORT..."
         python3 px_uploader.py --port "$PORT" --force px4fmu-v2_default.px4 && break
         echo "Retrying..."
