@@ -21,7 +21,7 @@ import glob
 import json
 import setproctitle
 
-setproctitle.setproctitle('ProbotMavProxyAPI')
+setproctitle.setproctitle('ProbotMavAPI')
 
 import mavproxy
 
